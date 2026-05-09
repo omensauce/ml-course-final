@@ -1,5 +1,5 @@
 """
-Mock live sensor API for the DEA plant alarm system demo.
+Mock live sensor API for the industrial plant alarm system demo.
 Generates realistic sensor readings from 9 plant instruments with
 configurable anomaly scenarios so the auto-inference pipeline has
 data to work with even without a live historian.
@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="Mock DEA Sensor API", version="1.0.0")
+app = FastAPI(title="Mock Plant Sensor API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )

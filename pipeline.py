@@ -1,7 +1,7 @@
 """
-ProcessOptimizer KZ — Raw Excel Ingestion Pipeline
-====================================================
-Reads raw XHQ historian Excel files, merges them into a single hourly CSV.
+Industrial Sensor Data — Raw Excel Ingestion Pipeline
+======================================================
+Reads raw historian Excel files, merges them into a single hourly CSV.
 
 Output feeds the Airflow ingest_etl_dag (source_path = data/processed/cleaned_dataset.csv).
 

@@ -34,7 +34,7 @@
       </svg>
     </div>
     <h1>Plant Alarm System</h1>
-    <p class="sub">DEA unit anomaly detection — Tengizchevroil</p>
+    <p class="sub">Industrial sensor anomaly detection</p>
 
     <form on:submit|preventDefault={submit}>
       <label>

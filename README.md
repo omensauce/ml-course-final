@@ -1,8 +1,8 @@
-# Plant Alarm ML System — Tengizchevroil DEA
+# Industrial Sensor Alarm ML System
 
-Industrial anomaly detection and early-warning forecasting for a DEA (diethanolamine) gas
-treatment plant. 28 days of 1-hour sensor data → 8 registered MLflow models → FastAPI inference
-→ user-facing Svelte UI with live sensor simulation, session auth, and inference history.
+Anomaly detection and early-warning forecasting for a gas treatment process. 28 days of
+1-hour sensor data → 8 registered MLflow models → FastAPI inference → user-facing Svelte UI
+with live sensor simulation, session auth, and inference history.
 
 ```
 Notebooks ──► Labeled dataset ──► Airflow ETL (PySpark + SMOTE)
@@ -51,14 +51,14 @@ Notebooks ──► Labeled dataset ──► Airflow ETL (PySpark + SMOTE)
 | ML Infra | `airflow-webserver/scheduler` | Airflow 2.10 | ETL and training DAG orchestration |
 | ML Infra | `spark-master/worker` | Spark 3.5 | PySpark ETL and model training |
 | ML Infra | `prometheus` / `grafana` | Prom + Grafana | Inference metrics dashboards |
-| Frontend | `mock-sensor-api` | FastAPI | Simulated live DEA plant sensor data |
+| Frontend | `mock-sensor-api` | FastAPI | Simulated live plant sensor data |
 | Frontend | `frontend-api` | FastAPI + SQLite | JWT auth, inference history, live bridge |
 | Frontend | `inference-api` | FastAPI + MLflow | ML model serving (point-in-time + forecast) |
 | Frontend | `svelte-ui` | Svelte 4 + Vite | Browser UI — dashboard, history, predict |
 
 ### Data models
 
-Nine instruments from DEA units D301 and D304:
+Nine instruments across two process units:
 `te301020` (°C) · `pdt31008` (mbar) · `pdt31001` (mbar) · `pdt31007` (mbar) ·
 `fq31050` (m³/h) · `lt301031` (%) · `lic31012_pv` (%) · `lic31002_pv` (%) · `fic31011_pv` (m³/h)
 
@@ -156,7 +156,7 @@ Run the three notebooks in order. Each builds on the previous output.
 cleaned_dataset.csv  →  labeled_dataset.csv  +  *.png visualisations
 ```
 
-- Visualises 28-day sensor timeseries (D301/D304 DEA units)
+- Visualises 28-day sensor timeseries across two process units
 - Identifies 6 known anomaly periods from operator logs
 - Applies rule-based labelling (pressure spikes, level swings, controller deviations)
 - Outputs `labeled_dataset.csv` (adds `anomaly_label` + `regime` columns)
@@ -242,7 +242,7 @@ of the heavy ML infrastructure. It brings up four services:
 
 ### Mock Sensor API (`mock_sensor_api.py`) — port 7500
 
-Simulates all 9 DEA plant instruments with realistic noise. Ships four anomaly scenarios
+Simulates all 9 plant instruments with realistic noise. Ships four anomaly scenarios
 switchable at runtime:
 
 | Scenario | Description |
@@ -491,7 +491,7 @@ All settings in `infra/.env` (copy from `infra/.env.example`).
 | `MINIO_ROOT_PASSWORD` | `minio123` | MinIO secret key |
 | `POSTGRES_USER` | `mlops` | Shared Postgres user |
 | `UI_PORT` | `8088` | Host port for the nginx reverse proxy |
-| `TZ` | `Asia/Qyzylorda` | Timezone for all containers |
+| `TZ` | `UTC` | Timezone for all containers |
 
 ### Frontend compose env (set in `infra/compose.frontend.yml` or `infra/.env`)
 
@@ -509,7 +509,7 @@ All settings in `infra/.env` (copy from `infra/.env.example`).
 ```
 submission/
 ├── pipeline.py                       Root data pipeline (Excel → cleaned_dataset.csv)
-├── mock_sensor_api.py                Standalone mock DEA sensor API (port 7500)
+├── mock_sensor_api.py                Standalone mock sensor API (port 7500)
 ├── Makefile                          make init/up/down/logs ENGINE=podman|docker
 ├── labeled_dataset.csv               673 h × 54 cols including anomaly_label
 ├── cleaned_dataset.csv               673 h × 52 sensor + feature cols

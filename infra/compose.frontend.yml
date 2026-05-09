@@ -2,7 +2,7 @@ name: alarm-frontend
 
 # Self-contained frontend stack — runs independently of the heavy ML infra.
 #
-#   mock-sensor-api  host:7500 → ctr:8002  — simulated DEA plant sensor readings
+#   mock-sensor-api  host:7500 → ctr:8002  — simulated plant sensor readings
 #   frontend-api     host:7501 → ctr:8001  — JWT auth + inference history + live bridge
 #   inference-api    host:7502 → ctr:8000  — ML model server (needs MLflow for full inference)
 #   svelte-ui        host:5173             — Vite dev server
