@@ -1,0 +1,43 @@
+{
+  "name": "plant_alarm_ingestion_suite",
+  "id": "b1c9e3f2-5a4d-4e8b-9c1f-3d2e6f7a8b9c",
+  "expectations": [
+    {
+      "type": "expect_column_to_exist",
+      "id": "c1a2b3d4-e5f6-7890-abcd-000000000001",
+      "kwargs": {"column": "timestamp"},
+      "meta": {}
+    },
+    {
+      "type": "expect_column_to_exist",
+      "id": "c1a2b3d4-e5f6-7890-abcd-000000000002",
+      "kwargs": {"column": "anomaly_label"},
+      "meta": {}
+    },
+    {
+      "type": "expect_column_values_to_not_be_null",
+      "id": "c1a2b3d4-e5f6-7890-abcd-000000000003",
+      "kwargs": {"column": "timestamp"},
+      "meta": {}
+    },
+    {
+      "type": "expect_column_values_to_be_in_set",
+      "id": "c1a2b3d4-e5f6-7890-abcd-000000000004",
+      "kwargs": {"column": "anomaly_label", "value_set": [0, 1, 0.0, 1.0]},
+      "meta": {}
+    },
+    {
+      "type": "expect_table_row_count_to_be_between",
+      "id": "c1a2b3d4-e5f6-7890-abcd-000000000005",
+      "kwargs": {"min_value": 1},
+      "meta": {}
+    },
+    {
+      "type": "expect_column_values_to_be_unique",
+      "id": "c1a2b3d4-e5f6-7890-abcd-000000000006",
+      "kwargs": {"column": "timestamp"},
+      "meta": {}
+    }
+  ],
+  "notes": "Ingestion validation suite for plant alarm sensor drops. Required columns: timestamp (unique, non-null), anomaly_label (binary 0/1). Ran by Airflow DAG ingest_etl_local_drop before Spark ETL."
+}

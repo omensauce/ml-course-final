@@ -1,0 +1,55 @@
+{
+  "id": null,
+  "uid": "plant-risk-overview",
+  "title": "Plant Alarm Risk Overview",
+  "tags": ["ml", "alarm", "inference"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Last Risk Score",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "inference_last_risk_score", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Inference Request Rate (5m)",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "rate(inference_requests_total[5m])", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "High Risk Alerts (5m)",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 0 },
+      "targets": [
+        { "expr": "rate(inference_high_risk_total[5m])", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "P95 Inference Latency",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(inference_latency_seconds_bucket[5m])) by (le))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Total Requests",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        { "expr": "inference_requests_total", "refId": "A" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+ui/svelte/node_modules/
+ui/svelte/.svelte-kit/
+ui/svelte/build/
+ui/svelte/dist/
+
+# Environment — never commit real credentials
+infra/.env
+.env
+*.env
+
+# Databases
+*.db
+*.sqlite
+
+# Runtime directories created by the stack
+data_drop/
+data_lake/
+infra/great_expectations/uncommitted/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

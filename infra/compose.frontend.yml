@@ -1,0 +1,125 @@
+name: alarm-frontend
+
+# Self-contained frontend stack — runs independently of the heavy ML infra.
+#
+#   mock-sensor-api  host:7500 → ctr:8002  — simulated DEA plant sensor readings
+#   frontend-api     host:7501 → ctr:8001  — JWT auth + inference history + live bridge
+#   inference-api    host:7502 → ctr:8000  — ML model server (needs MLflow for full inference)
+#   svelte-ui        host:5173             — Vite dev server
+#
+# Ports 7914-8813 are reserved by Hyper-V on this machine, so host bindings use
+# the 7500-7502 range which is clear.
+#
+# Start:  podman-compose -f infra/compose.frontend.yml up -d
+# Stop:   podman-compose -f infra/compose.frontend.yml down
+# Logs:   podman-compose -f infra/compose.frontend.yml logs -f
+
+services:
+
+  # ── Mock live sensor data ───────────────────────────────────────────────────
+  mock-sensor-api:
+    image: docker.io/library/python:3.11-slim
+    working_dir: /workspace
+    volumes:
+      - ../:/workspace
+    command: >
+      sh -c "pip install --quiet --no-cache-dir fastapi uvicorn &&
+             uvicorn mock_sensor_api:app --host 0.0.0.0 --port 8002"
+    ports:
+      - "7500:8002"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    networks: [frontend_net]
+
+  # ── JWT auth + history + inference bridge ───────────────────────────────────
+  frontend-api:
+    image: docker.io/library/python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ../services/frontend_api:/app
+      - frontend_db:/data
+    environment:
+      INFERENCE_API_URL: http://inference-api:8000
+      SENSOR_API_URL:    http://mock-sensor-api:8002
+      DB_PATH:           /data/frontend.db
+      JWT_SECRET:        change-me-in-production
+    command: >
+      sh -c "pip install --quiet --no-cache-dir -r requirements.txt &&
+             uvicorn app:app --host 0.0.0.0 --port 8001"
+    ports:
+      - "7501:8001"
+    depends_on:
+      mock-sensor-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 40s
+    networks: [frontend_net]
+
+  # ── Inference API (ML model server) ─────────────────────────────────────────
+  # Models load lazily from MLflow. If MLflow is unreachable the API still starts
+  # and returns 503 for predict/forecast — the UI shows this gracefully.
+  inference-api:
+    image: docker.io/library/python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ../services/inference/app:/app/app
+      - ../services/inference/requirements.txt:/app/requirements.txt
+    environment:
+      # When the ML infra stack is running, set this to reach its MLflow.
+      # host.containers.internal resolves to the WSL2 host from inside the container.
+      MLFLOW_TRACKING_URI: "${MLFLOW_TRACKING_URI:-http://host.containers.internal:5000}"
+      MLFLOW_S3_ENDPOINT_URL: "${MLFLOW_S3_ENDPOINT_URL:-http://host.containers.internal:9000}"
+      AWS_ACCESS_KEY_ID:     "${AWS_ACCESS_KEY_ID:-minio}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-minio123}"
+      MODEL_NAME:          plant_alarm_champion
+      CORS_ORIGINS:        "http://localhost:5173"
+    command: >
+      sh -c "pip install --quiet --no-cache-dir -r /app/requirements.txt &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "7502:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks: [frontend_net]
+
+  # ── Svelte dev UI ────────────────────────────────────────────────────────────
+  svelte-ui:
+    image: docker.io/library/node:20-alpine
+    working_dir: /app
+    volumes:
+      - ../ui/svelte:/app
+    environment:
+      # Browser-facing URLs — must reach the host-mapped ports from the user's machine.
+      # Python APIs use 7500-7502 range to avoid Windows/Hyper-V port exclusions.
+      VITE_FRONTEND_API_URL: http://localhost:7501
+      VITE_SENSOR_API_URL:   http://localhost:7500
+    command: >
+      sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    depends_on:
+      frontend-api:
+        condition: service_healthy
+    networks: [frontend_net]
+
+volumes:
+  frontend_db:
+
+networks:
+  frontend_net:
+    driver: bridge
