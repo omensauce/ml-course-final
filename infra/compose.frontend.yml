@@ -7,8 +7,8 @@ name: alarm-frontend
 #   inference-api    host:7502 → ctr:8000  — ML model server (needs MLflow for full inference)
 #   svelte-ui        host:5173             — Vite dev server
 #
-# Ports 7914-8813 are reserved by Hyper-V on this machine, so host bindings use
-# the 7500-7502 range which is clear.
+# Hyper-V exclusions on this machine cover 7064–7363; host bindings use
+# the 7500-7502 range which is clear of all exclusions.
 #
 # Start:  podman-compose -f infra/compose.frontend.yml up -d
 # Stop:   podman-compose -f infra/compose.frontend.yml down

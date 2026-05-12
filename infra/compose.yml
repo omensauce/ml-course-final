@@ -10,6 +10,7 @@ services:
       TZ: ${TZ}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init-mlflow-db.sql:/docker-entrypoint-initdb.d/init-mlflow-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -162,7 +163,7 @@ services:
       SPARK_NO_DAEMONIZE: "true"
     command: ["/opt/spark/sbin/start-master.sh"]
     ports:
-      - "7077:7077"
+      - "${SPARK_MASTER_PORT:-7077}:7077"
       - "8081:8080"
     volumes:
       - ./spark/jobs:/opt/spark/jobs
