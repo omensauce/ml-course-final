@@ -13,7 +13,8 @@ import pandas as pd
 from mlflow.tracking import MlflowClient
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.decomposition import PCA
-from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.ensemble import (GradientBoostingClassifier, IsolationForest,
+                               RandomForestClassifier)
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score,
                               roc_auc_score, brier_score_loss,
@@ -129,10 +130,12 @@ def main() -> None:
         "fq31050", "lt301031", "lic31012_pv", "lic31002_pv", "fic31011_pv",
     ]
 
-    # Point-in-time features: instantaneous readings only.
-    # Excluded: _max/_min (intra-hour sub-hourly aggregates not present at
-    # inference), _roll* columns (require multi-hour history), and any
-    # pre-aggregated stats that acted as label proxies.
+    # Point-in-time features: instantaneous sensor readings only.
+    # failure_frequency_48 excluded: it is a rolling sum of past anomaly_labels
+    # and so strongly correlated with the target that it dominates all other
+    # features, making the model insensitive to current sensor values.
+    # Excluded: _max/_min (intra-hour aggregates unavailable at inference),
+    # _roll* from original CSV (unknown computation window).
     POINT_FEATURES = [
         "te301020", "pdt31008", "pdt31001", "pdt31007",
         "fq31050", "lt301031", "lic31012_pv", "lic31002_pv", "fic31011_pv",
@@ -190,38 +193,68 @@ def main() -> None:
                                  _latest_version("plant_alarm_isolation_forest"),
                                  promote_metric, float(metrics[promote_metric]))
 
-        # ── 2. Random Forest ──────────────────────────────────────────────────
-        rf = RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1)
-        with mlflow.start_run(run_name="random_forest"):
+        # ── 2. Gradient Boosting champion candidate ───────────────────────────
+        # Shallow trees (max_depth=3) + min_samples_leaf=10 prevent leaf
+        # memorisation. GBM's additive structure produces smooth sigmoid-like
+        # probability curves without a separate calibration step, avoiding the
+        # 0%/100% binary jumps that deep Random Forests produce.
+        gb_pipe = SKPipeline([
+            ("scaler", StandardScaler()),
+            ("gb", GradientBoostingClassifier(
+                n_estimators=150,
+                max_depth=3,
+                learning_rate=0.05,
+                subsample=0.8,
+                min_samples_leaf=10,
+                random_state=42,
+            )),
+        ])
+        with mlflow.start_run(run_name="gradient_boosting"):
             mlflow.log_input(dataset_ref, context="training")
-            mlflow.log_params({"model_type": "random_forest", "n_estimators": 300})
-            rf.fit(X_train, y_train)
-            pred   = rf.predict(X_valid)
-            scores = rf.predict_proba(X_valid)[:, 1]
+            mlflow.log_params({"model_type": "gradient_boosting",
+                               "n_estimators": 150, "max_depth": 3,
+                               "learning_rate": 0.05, "min_samples_leaf": 10,
+                               "feature_count": len(available)})
+            gb_pipe.fit(X_train, y_train)
+            pred   = gb_pipe.predict(X_valid)
+            scores = gb_pipe.predict_proba(X_valid)[:, 1]
             metrics = _log_clf_metrics(y_valid, pred, scores)
-            mlflow.sklearn.log_model(rf, artifact_path="model",
+            mlflow.sklearn.log_model(gb_pipe, artifact_path="model",
                                      registered_model_name=model_name)
-            _report(tmp, "random_forest", metrics)
+            _report(tmp, "gradient_boosting", metrics)
             _maybe_promote_alias(model_name, _latest_version(model_name),
                                  promote_metric, float(metrics[promote_metric]))
 
-        # ── 3. XGBoost ────────────────────────────────────────────────────────
-        xgb = XGBClassifier(
-            n_estimators=300, max_depth=5, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8,
-            eval_metric="logloss", random_state=42,
-        )
-        with mlflow.start_run(run_name="xgboost"):
+        # ── 3. Calibrated XGBoost champion candidate ──────────────────────────
+        # Shallow trees (max_depth=3) + min_child_weight=10 prevent leaf-level
+        # memorisation. Sigmoid calibration via TimeSeriesSplit corrects the
+        # well-known XGBoost extreme-probability bias on small datasets.
+        xgb_cal = SKPipeline([
+            ("scaler", StandardScaler()),
+            ("xgb_cal", CalibratedClassifierCV(
+                XGBClassifier(
+                    n_estimators=200, max_depth=3, learning_rate=0.05,
+                    subsample=0.8, colsample_bytree=0.8,
+                    min_child_weight=10,
+                    eval_metric="logloss", random_state=42,
+                ),
+                method="sigmoid",
+                cv=TimeSeriesSplit(n_splits=3),
+            )),
+        ])
+        with mlflow.start_run(run_name="xgboost_calibrated"):
             mlflow.log_input(dataset_ref, context="training")
-            mlflow.log_params({"model_type": "xgboost", "n_estimators": 300,
-                               "max_depth": 5, "learning_rate": 0.05})
-            xgb.fit(X_train, y_train)
-            pred   = xgb.predict(X_valid)
-            scores = xgb.predict_proba(X_valid)[:, 1]
+            mlflow.log_params({"model_type": "xgboost_calibrated",
+                               "n_estimators": 200, "max_depth": 3,
+                               "calibration": "sigmoid",
+                               "feature_count": len(available)})
+            xgb_cal.fit(X_train, y_train)
+            pred   = xgb_cal.predict(X_valid)
+            scores = xgb_cal.predict_proba(X_valid)[:, 1]
             metrics = _log_clf_metrics(y_valid, pred, scores)
-            mlflow.sklearn.log_model(xgb, artifact_path="model",
+            mlflow.sklearn.log_model(xgb_cal, artifact_path="model",
                                      registered_model_name=model_name)
-            _report(tmp, "xgboost", metrics)
+            _report(tmp, "xgboost_calibrated", metrics)
             _maybe_promote_alias(model_name, _latest_version(model_name),
                                  promote_metric, float(metrics[promote_metric]))
 
@@ -278,6 +311,11 @@ def main() -> None:
             mlflow.sklearn.log_model(rf_alarm, artifact_path="model",
                                      registered_model_name="plant_alarm_rf_soft_alarm")
             _report(tmp, "rf_soft_alarm", metrics_rf)
+            # Also compete for the champion slot — calibrated RF often wins on AUC
+            mlflow.sklearn.log_model(rf_alarm, artifact_path="model_champion_copy",
+                                     registered_model_name=model_name)
+            _maybe_promote_alias(model_name, _latest_version(model_name),
+                                 promote_metric, float(metrics_rf[promote_metric]))
 
         # ── 3d. LR multinomial regime classifier ──────────────────────────────
         # 3-class: Normal=0 / Transition=1 / Alarm=2.

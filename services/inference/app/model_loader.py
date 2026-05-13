@@ -62,6 +62,30 @@ def _expected_feature_names(model) -> list[str] | None:
     return None
 
 
+def _score_from_model(model, frame: pd.DataFrame) -> float:
+    """Extract a continuous [0, 1] probability from an MLflow pyfunc model.
+
+    MLflow's pyfunc predict() for sklearn classifiers returns the class label
+    (0 or 1), not a probability. We try predict_proba on the underlying
+    sklearn object first; if unavailable, fall back to predict() which may
+    still return a calibrated float for custom pyfunc flavors.
+    """
+    try:
+        impl = model._model_impl
+        for attr in ("sklearn_model", "xgb_model", "_model"):
+            underlying = getattr(impl, attr, None)
+            if underlying is not None and hasattr(underlying, "predict_proba"):
+                proba = underlying.predict_proba(frame)
+                # proba shape: (n_samples, n_classes) — column 1 is P(alarm)
+                return float(np.clip(proba[0, 1], 0.0, 1.0))
+    except Exception:
+        pass
+    # Fallback: pyfunc predict — may be a calibrated float or 0/1
+    pred = model.predict(frame)
+    val = float(pred.tolist()[0]) if hasattr(pred, "tolist") else float(pred[0])
+    return float(np.clip(val, 0.0, 1.0))
+
+
 def predict_risk(features: dict[str, float]) -> dict[str, float]:
     """Point-in-time risk prediction from a flat feature dict.
 
@@ -75,14 +99,8 @@ def predict_risk(features: dict[str, float]) -> dict[str, float]:
         frame = pd.DataFrame([row], columns=expected)
     else:
         frame = pd.DataFrame([features])
-    pred = model.predict(frame)
 
-    if hasattr(pred, "tolist"):
-        pred_val = float(pred.tolist()[0])
-    else:
-        pred_val = float(pred[0])
-
-    risk_score = max(0.0, min(1.0, pred_val))
+    risk_score = _score_from_model(model, frame)
     return {"risk_score": risk_score, "alarm": 1 if risk_score >= 0.5 else 0}
 
 
