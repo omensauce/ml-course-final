@@ -274,6 +274,38 @@ def auto_infer(user: dict = Depends(_current_user)):
     return result
 
 
+# ── Interpretability proxy (not persisted to history) ────────────────────────
+
+@app.post("/infer/explain")
+def infer_explain(body: PredictIn, user: dict = Depends(_current_user)):
+    """Proxy to inference /explain — returns local SHAP values for one feature vector."""
+    try:
+        r = httpx.post(
+            f"{INFERENCE_API}/explain",
+            json={"features": body.features},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(exc.response.status_code, exc.response.text)
+    except Exception as exc:
+        raise HTTPException(502, f"Inference API unavailable: {exc}")
+
+
+@app.get("/infer/global_importance")
+def infer_global_importance(user: dict = Depends(_current_user)):
+    """Proxy to inference /global_importance — returns model-level feature importances."""
+    try:
+        r = httpx.get(f"{INFERENCE_API}/global_importance", timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(exc.response.status_code, exc.response.text)
+    except Exception as exc:
+        raise HTTPException(502, f"Inference API unavailable: {exc}")
+
+
 # ── History endpoints ─────────────────────────────────────────────────────────
 @app.get("/history")
 def get_history(limit: int = 200, user: dict = Depends(_current_user)):

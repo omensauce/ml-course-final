@@ -88,6 +88,19 @@ export async function apiAutoInfer() {
   }));
 }
 
+// ── Interpretability ──────────────────────────────────────────────────────────
+export async function apiExplain(features) {
+  return _json(await fetch(`${FRONTEND}/infer/explain`, {
+    method: 'POST',
+    headers: authHdr(),
+    body: JSON.stringify({ features }),
+  }));
+}
+
+export async function apiGlobalImportance() {
+  return _json(await fetch(`${FRONTEND}/infer/global_importance`, { headers: authHdr() }));
+}
+
 // ── History ───────────────────────────────────────────────────────────────────
 export async function apiGetHistory(limit = 200) {
   return _json(await fetch(`${FRONTEND}/history?limit=${limit}`, { headers: authHdr() }));

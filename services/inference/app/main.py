@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.responses import Response
 
-from app.model_loader import predict_risk, predict_forecast, load_named_model, WINDOW_SIZE
+from app.model_loader import (
+    predict_risk, predict_forecast, load_named_model, WINDOW_SIZE,
+    explain_local, get_global_importance,
+)
 
 app = FastAPI(title="Plant Alarm Inference API", version="0.2.0")
 
@@ -122,6 +125,26 @@ def forecast(payload: ForecastRequest) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return result
+
+
+@app.post("/explain")
+def explain(payload: PredictRequest) -> dict:
+    """Local SHAP feature importance for a single prediction.
+
+    Returns the top features by |SHAP value| so callers can see which sensors
+    drove the risk score up or down for this specific input.
+    """
+    return explain_local(payload.features)
+
+
+@app.get("/global_importance")
+def global_importance() -> dict:
+    """Global feature importances from the champion model's feature_importances_ attribute.
+
+    Returns features sorted by mean impurity decrease (descending), giving an
+    overall view of which sensors the model relies on most.
+    """
+    return get_global_importance()
 
 
 @app.post("/recommend")

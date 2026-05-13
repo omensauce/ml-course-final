@@ -121,6 +121,124 @@ def _fill_feature_row(features: dict[str, float], expected: list[str]) -> dict[s
     return row
 
 
+def _unwrap_tree_estimator(model) -> tuple:
+    """Extract (preprocessor | None, final_tree_estimator | None) from any MLflow/sklearn wrapper.
+
+    Handles:
+      MLflow pyfunc → sklearn_model / xgb_model / _model attribute
+      CalibratedClassifierCV → .calibrated_classifiers_[0].estimator
+      sklearn Pipeline → split into [:-1] preprocessor and [-1] final step
+    """
+    impl = model._model_impl
+    for attr in ("sklearn_model", "xgb_model", "_model"):
+        underlying = getattr(impl, attr, None)
+        if underlying is None:
+            continue
+
+        # Unwrap CalibratedClassifierCV
+        if hasattr(underlying, "calibrated_classifiers_"):
+            underlying = underlying.calibrated_classifiers_[0].estimator
+
+        # Unwrap sklearn Pipeline
+        if hasattr(underlying, "steps"):
+            preprocessor = underlying[:-1]  # all steps except last
+            final = underlying[-1]
+        else:
+            preprocessor = None
+            final = underlying
+
+        # Unwrap CalibratedClassifierCV that may be the Pipeline's final step
+        if hasattr(final, "calibrated_classifiers_"):
+            final = final.calibrated_classifiers_[0].estimator
+
+        if hasattr(final, "feature_importances_") or hasattr(final, "predict"):
+            return preprocessor, final
+
+    return None, None
+
+
+def get_global_importance() -> dict:
+    """Return global feature importances from the champion model's feature_importances_ attribute."""
+    try:
+        model = load_champion_model()
+        expected = _expected_feature_names(model)
+        _, final = _unwrap_tree_estimator(model)
+        if final is None or not hasattr(final, "feature_importances_"):
+            return {"importances": [], "method": "unavailable"}
+
+        importances = final.feature_importances_
+        if expected and len(expected) == len(importances):
+            names = expected
+        else:
+            names = [f"feature_{i}" for i in range(len(importances))]
+
+        pairs = sorted(zip(names, importances.tolist()), key=lambda x: x[1], reverse=True)
+        return {
+            "importances": [{"feature": f, "importance": round(v, 6)} for f, v in pairs],
+            "method": "feature_importances",
+        }
+    except Exception:
+        return {"importances": [], "method": "unavailable"}
+
+
+def explain_local(features: dict[str, float]) -> dict:
+    """Compute local SHAP values for one prediction using the champion model.
+
+    Uses TreeExplainer on the underlying tree estimator. If the model has a
+    preprocessing Pipeline (e.g. StandardScaler), the input is transformed
+    before SHAP computation so values are in the model's own feature space.
+    Feature names are preserved throughout.
+    """
+    try:
+        import shap as _shap  # deferred import — only needed for /explain calls
+    except ImportError:
+        return {"local_importance": [], "method": "unavailable", "error": "shap not installed"}
+
+    try:
+        model = load_champion_model()
+        expected = _expected_feature_names(model)
+        if expected is not None:
+            row = _fill_feature_row(features, expected)
+            frame = pd.DataFrame([row], columns=expected)
+        else:
+            frame = pd.DataFrame([features])
+
+        preprocessor, final = _unwrap_tree_estimator(model)
+        if final is None or not hasattr(final, "feature_importances_"):
+            return {"local_importance": [], "method": "unavailable"}
+
+        if preprocessor is not None:
+            transformed = preprocessor.transform(frame)
+            input_df = pd.DataFrame(transformed, columns=frame.columns)
+        else:
+            input_df = frame
+
+        explainer = _shap.TreeExplainer(final)
+        shap_raw = explainer.shap_values(input_df)
+
+        # Binary classifiers return [neg_class_array, pos_class_array]; take alarm class
+        if isinstance(shap_raw, list) and len(shap_raw) == 2:
+            shap_row = shap_raw[1][0]
+            base_raw = explainer.expected_value
+            base_val = float(base_raw[1] if hasattr(base_raw, "__len__") else base_raw)
+        else:
+            shap_row = shap_raw[0] if shap_raw.ndim == 2 else shap_raw
+            base_raw = explainer.expected_value
+            base_val = float(base_raw[0] if hasattr(base_raw, "__len__") else base_raw)
+
+        feature_names = list(frame.columns)
+        feature_values = frame.iloc[0].tolist()
+        items = [
+            {"feature": fn, "value": round(float(fv), 4), "shap_value": round(float(sv), 6)}
+            for fn, fv, sv in zip(feature_names, feature_values, shap_row)
+        ]
+        items.sort(key=lambda x: abs(x["shap_value"]), reverse=True)
+
+        return {"local_importance": items, "base_value": round(base_val, 6), "method": "shap_tree"}
+    except Exception as exc:
+        return {"local_importance": [], "method": "unavailable", "error": str(exc)}
+
+
 def predict_risk(features: dict[str, float]) -> dict[str, float]:
     """Point-in-time risk prediction from a flat feature dict.
 

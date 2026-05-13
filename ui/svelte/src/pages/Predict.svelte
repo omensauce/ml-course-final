@@ -1,6 +1,7 @@
 <script>
-  import { apiPredict } from '../lib/api.js';
+  import { apiPredict, apiExplain, apiGlobalImportance } from '../lib/api.js';
   import RiskGauge from '../components/RiskGauge.svelte';
+  import FeatureImportanceBar from '../components/FeatureImportanceBar.svelte';
 
   // Default feature vector — representative normal operating point
   let featuresText = JSON.stringify({
@@ -62,10 +63,17 @@
     "failure_frequency_48": 9
   }, null, 2);
 
-  let result  = null;
-  let error   = '';
-  let loading = false;
-  let parseError = '';
+  let result       = null;
+  let error        = '';
+  let loading      = false;
+  let parseError   = '';
+
+  // Interpretability state
+  let explainResult      = null;
+  let showLocalImportance = true;
+  let globalResult       = null;
+  let showGlobal         = false;
+  let globalLoading      = false;
 
   $: {
     try { JSON.parse(featuresText); parseError = ''; }
@@ -73,14 +81,34 @@
   }
 
   async function run() {
-    error = ''; result = null; loading = true;
+    error = ''; result = null; explainResult = null; loading = true;
     try {
       const features = JSON.parse(featuresText);
-      result = await apiPredict(features);
+      // Fire prediction and explanation in parallel
+      const [pred, expl] = await Promise.allSettled([
+        apiPredict(features),
+        apiExplain(features),
+      ]);
+      if (pred.status === 'fulfilled') result = pred.value;
+      else throw new Error(pred.reason?.message ?? 'Prediction failed');
+      if (expl.status === 'fulfilled' && expl.value?.local_importance?.length)
+        explainResult = expl.value;
     } catch (e) {
       error = e.message;
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadGlobal() {
+    if (globalResult) { showGlobal = !showGlobal; return; }
+    showGlobal = true;
+    globalLoading = true;
+    try {
+      const r = await apiGlobalImportance();
+      if (r?.importances?.length) globalResult = r;
+    } catch { /* silently fail */ } finally {
+      globalLoading = false;
     }
   }
 
@@ -155,6 +183,23 @@
 
           <p class="saved-note">✓ Saved to your inference history</p>
         </div>
+
+        {#if explainResult}
+          <div class="explain-panel">
+            <button class="explain-toggle" on:click={() => showLocalImportance = !showLocalImportance}>
+              <span>Feature Contributions (SHAP)</span>
+              <svg class="chevron" class:open={showLocalImportance} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+            {#if showLocalImportance}
+              <p class="explain-hint">
+                Red = pushes toward alarm · Green = pushes toward normal · Values = actual sensor reading
+              </p>
+              <FeatureImportanceBar importances={explainResult.local_importance} mode="local" topN={12} />
+            {/if}
+          </div>
+        {/if}
       {:else if error}
         <div class="error-card">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="1.5">
@@ -173,6 +218,28 @@
         </div>
       {/if}
     </div>
+  </div>
+
+  <!-- Global feature importance (lazy-loaded on first expand) -->
+  <div class="global-panel">
+    <button class="explain-toggle" on:click={loadGlobal}>
+      <span>Model Feature Importance (Global)</span>
+      <svg class="chevron" class:open={showGlobal} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="6 9 12 15 18 9"/>
+      </svg>
+    </button>
+    {#if showGlobal}
+      {#if globalLoading}
+        <p class="explain-hint">Loading…</p>
+      {:else if globalResult}
+        <p class="explain-hint">
+          Mean impurity decrease across all trees — which sensors the model relies on most overall.
+        </p>
+        <FeatureImportanceBar importances={globalResult.importances} mode="global" topN={15} />
+      {:else}
+        <p class="explain-hint">Global importance unavailable (model not loaded or no feature_importances_).</p>
+      {/if}
+    {/if}
   </div>
 
 </div>
@@ -311,6 +378,47 @@
     padding: 20px;
   }
   .placeholder p { margin: 0; }
+
+  /* Interpretability panels */
+  .explain-panel {
+    margin-top: 16px;
+    border-top: 1px solid #e2e8f0;
+    padding-top: 14px;
+  }
+
+  .global-panel {
+    margin-top: 18px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 16px 18px;
+  }
+
+  .explain-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #1e293b;
+    text-align: left;
+    gap: 8px;
+  }
+  .explain-toggle:hover { color: #0f766e; }
+
+  .chevron { transition: transform 0.2s; color: #94a3b8; flex-shrink: 0; }
+  .chevron.open { transform: rotate(180deg); }
+
+  .explain-hint {
+    font-size: 0.72rem;
+    color: #94a3b8;
+    margin: 8px 0 12px;
+  }
 
   @media (max-width: 800px) {
     .layout { grid-template-columns: 1fr; }

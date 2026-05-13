@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import {
-    apiLiveSensor, apiScenarios, apiActivateScenario, apiAutoInfer,
+    apiLiveSensor, apiScenarios, apiActivateScenario, apiAutoInfer, apiExplain,
   } from '../lib/api.js';
   import { riskHistory, isAutoInferring, lastAutoResult, liveSensor } from '../lib/stores.js';
   import SensorCard  from '../components/SensorCard.svelte';
@@ -26,6 +26,7 @@
   let autoError     = '';
   let autoRunning   = false;
   let prevReading   = null;
+  let topDrivers    = [];  // top-3 SHAP drivers from last auto-inference
 
   let sensorTimer = null;
   let autoTimer   = null;
@@ -58,6 +59,15 @@
         const next = [...h, { x: new Date().toISOString(), y: result.anomaly_probability }];
         return next.slice(-80);
       });
+
+      // Fetch local SHAP drivers using the sensor snapshot returned by auto-infer
+      if (result.sensor_snapshot) {
+        apiExplain(result.sensor_snapshot).then(expl => {
+          if (expl?.local_importance?.length) {
+            topDrivers = expl.local_importance.slice(0, 3);
+          }
+        }).catch(() => {});
+      }
     } catch (e) {
       autoError = e.message;
     } finally {
@@ -194,6 +204,20 @@
             {$lastAutoResult.alarm === 1 ? '⚠ ALARM' : '✓ Normal'}
           </div>
           <div class="obs-note">{$lastAutoResult.n_observations ?? '—'} observations</div>
+          {#if topDrivers.length}
+            <div class="drivers">
+              <div class="drivers-label">Top risk drivers</div>
+              {#each topDrivers as d}
+                <div class="driver-row">
+                  <span class="driver-dot" class:pos={d.shap_value > 0} class:neg={d.shap_value < 0}></span>
+                  <span class="driver-name" title={d.feature}>{d.feature.replace(/_/g, ' ')}</span>
+                  <span class="driver-shap" class:pos={d.shap_value > 0} class:neg={d.shap_value < 0}>
+                    {d.shap_value > 0 ? '+' : ''}{d.shap_value.toFixed(3)}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       {:else}
         <div class="no-result">
@@ -359,6 +383,27 @@
   }
   .alarm-badge[data-alarm="true"] { background: #fee2e2; color: #991b1b; }
   .obs-note { font-size: 0.72rem; color: #cbd5e1; margin-top: 5px; }
+
+  .drivers { margin-top: 10px; text-align: left; }
+  .drivers-label { font-size: 0.68rem; color: #94a3b8; font-weight: 600; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .driver-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+    font-size: 0.72rem;
+  }
+  .driver-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .driver-dot.pos { background: #ef4444; }
+  .driver-dot.neg { background: #22c55e; }
+  .driver-name { color: #475569; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+  .driver-shap { font-weight: 700; white-space: nowrap; }
+  .driver-shap.pos { color: #dc2626; }
+  .driver-shap.neg { color: #16a34a; }
 
   .no-result {
     display: flex;
