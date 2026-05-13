@@ -215,16 +215,22 @@ def explain_local(features: dict[str, float]) -> dict:
 
         explainer = _shap.TreeExplainer(final)
         shap_raw = explainer.shap_values(input_df)
+        base_raw = explainer.expected_value
 
-        # Binary classifiers return [neg_class_array, pos_class_array]; take alarm class
-        if isinstance(shap_raw, list) and len(shap_raw) == 2:
-            shap_row = shap_raw[1][0]
-            base_raw = explainer.expected_value
-            base_val = float(base_raw[1] if hasattr(base_raw, "__len__") else base_raw)
+        # SHAP 0.46+ returns ndarray (n_samples, n_features, n_classes) for classifiers.
+        # Older SHAP returned list [neg_array, pos_array] each (n_samples, n_features).
+        if isinstance(shap_raw, list):
+            # Legacy list format — take P(alarm) class
+            shap_row = np.asarray(shap_raw[1])[0]
+            base_val = float(np.asarray(base_raw).flat[1])
+        elif isinstance(shap_raw, np.ndarray) and shap_raw.ndim == 3:
+            # New 3-D format: (n_samples, n_features, n_classes)
+            shap_row = shap_raw[0, :, 1]
+            base_val = float(np.asarray(base_raw).flat[1])
         else:
-            shap_row = shap_raw[0] if shap_raw.ndim == 2 else shap_raw
-            base_raw = explainer.expected_value
-            base_val = float(base_raw[0] if hasattr(base_raw, "__len__") else base_raw)
+            # Regression / single-output: (n_samples, n_features)
+            shap_row = np.asarray(shap_raw)[0]
+            base_val = float(np.asarray(base_raw).flat[0])
 
         feature_names = list(frame.columns)
         feature_values = frame.iloc[0].tolist()
