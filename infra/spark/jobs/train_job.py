@@ -22,6 +22,11 @@ from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_s
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline as SKPipeline
 from sklearn.preprocessing import StandardScaler
+try:
+    from lightgbm import LGBMClassifier
+    _LGBM_AVAILABLE = True
+except ImportError:
+    _LGBM_AVAILABLE = False
 from xgboost import XGBClassifier
 
 
@@ -130,18 +135,37 @@ def main() -> None:
         "fq31050", "lt301031", "lic31012_pv", "lic31002_pv", "fic31011_pv",
     ]
 
-    # Point-in-time features: instantaneous sensor readings only.
-    # failure_frequency_48 excluded: it is a rolling sum of past anomaly_labels
-    # and so strongly correlated with the target that it dominates all other
-    # features, making the model insensitive to current sensor values.
-    # Excluded: _max/_min (intra-hour aggregates unavailable at inference),
-    # _roll* from original CSV (unknown computation window).
+    # Point-in-time features: instantaneous readings + causal ETL-computed stats.
+    #
+    # Rolling stats (window=13h, backward-looking only — no future leakage):
+    #   - Computed on the full temporal sequence in ETL before any split, so
+    #     the train/val boundary does not corrupt the rolling window.
+    #   - SMOTE synthetic rows get interpolated roll values (physically imprecise
+    #     but harmless — they are training-only; the val set is untouched).
+    #   - CalibratedClassifierCV uses TimeSeriesSplit throughout, preserving order.
+    #
+    # Delta features (1-step diff — strictly causal, only the prior row is used).
+    #
+    # Excluded: failure_frequency_48 (rolling sum of labels; dominates all sensor
+    # signals when set to 0, making the model insensitive to current readings).
+    # Excluded: _max/_min (intra-hour aggregates unavailable at inference).
     POINT_FEATURES = [
+        # Instantaneous sensor readings
         "te301020", "pdt31008", "pdt31001", "pdt31007",
-        "fq31050", "lt301031", "lic31012_pv", "lic31002_pv", "fic31011_pv",
+        "fq31050", "lt301031",
+        "lic31012_pv", "lic31002_pv", "fic31011_pv",
         "lic31012_op", "lic31002_op", "fic31011_op",
+        # SP-PV deviations
         "lic31012_deviation", "lic31002_deviation", "fic31011_deviation",
+        # Time
         "hour_of_day", "day_of_week",
+        # ETL-computed causal rolling stats (window=13h backward-looking)
+        "pdt31008_roll_mean", "pdt31008_roll_std",
+        "lt301031_roll_mean",  "lt301031_roll_std",   # key: level-swing alarms used this
+        "lic31002_pv_roll_mean", "lic31002_pv_roll_std",
+        "te301020_roll_mean",  "te301020_roll_std",
+        # 1-hour rate-of-change (causal diff with prior timestep)
+        "pdt31008_delta", "lt301031_delta", "lic31002_pv_delta",
     ]
 
     with TemporaryDirectory() as tmp_dir:
@@ -219,6 +243,7 @@ def main() -> None:
             pred   = gb_pipe.predict(X_valid)
             scores = gb_pipe.predict_proba(X_valid)[:, 1]
             metrics = _log_clf_metrics(y_valid, pred, scores)
+            mlflow.log_metric("optimal_threshold", _optimal_threshold(y_valid, scores))
             mlflow.sklearn.log_model(gb_pipe, artifact_path="model",
                                      registered_model_name=model_name)
             _report(tmp, "gradient_boosting", metrics)
@@ -252,13 +277,51 @@ def main() -> None:
             pred   = xgb_cal.predict(X_valid)
             scores = xgb_cal.predict_proba(X_valid)[:, 1]
             metrics = _log_clf_metrics(y_valid, pred, scores)
+            mlflow.log_metric("optimal_threshold", _optimal_threshold(y_valid, scores))
             mlflow.sklearn.log_model(xgb_cal, artifact_path="model",
                                      registered_model_name=model_name)
             _report(tmp, "xgboost_calibrated", metrics)
             _maybe_promote_alias(model_name, _latest_version(model_name),
                                  promote_metric, float(metrics[promote_metric]))
 
-        # ── 3b. LR soft alarm (binary, calibrated via sigmoid) ───────────────
+        # ── 3b. LightGBM calibrated champion candidate (if installed) ────────
+        # leaf-wise growth with num_leaves=15 + min_child_samples=10 prevents
+        # leaf memorisation.  Isotonic calibration via TimeSeriesSplit ensures
+        # temporal folds are respected — no random-split leakage.
+        if _LGBM_AVAILABLE:
+            lgbm_cal = SKPipeline([
+                ("scaler", StandardScaler()),
+                ("lgbm_cal", CalibratedClassifierCV(
+                    LGBMClassifier(
+                        n_estimators=200, max_depth=4, learning_rate=0.05,
+                        num_leaves=15, subsample=0.8, colsample_bytree=0.8,
+                        min_child_samples=10, class_weight="balanced",
+                        random_state=42, verbose=-1,
+                    ),
+                    method="isotonic",
+                    cv=TimeSeriesSplit(n_splits=3),
+                )),
+            ])
+            with mlflow.start_run(run_name="lgbm_calibrated"):
+                mlflow.log_input(dataset_ref, context="training")
+                mlflow.log_params({"model_type": "lgbm_calibrated",
+                                   "n_estimators": 200, "max_depth": 4,
+                                   "num_leaves": 15, "calibration": "isotonic",
+                                   "feature_count": len(available)})
+                lgbm_cal.fit(X_train, y_train)
+                pred   = lgbm_cal.predict(X_valid)
+                scores = lgbm_cal.predict_proba(X_valid)[:, 1]
+                metrics = _log_clf_metrics(y_valid, pred, scores)
+                mlflow.log_metric("optimal_threshold", _optimal_threshold(y_valid, scores))
+                mlflow.sklearn.log_model(lgbm_cal, artifact_path="model",
+                                         registered_model_name=model_name)
+                _report(tmp, "lgbm_calibrated", metrics)
+                _maybe_promote_alias(model_name, _latest_version(model_name),
+                                     promote_metric, float(metrics[promote_metric]))
+        else:
+            print("LightGBM not installed — skipping lgbm_calibrated run.")
+
+        # ── 3c. LR soft alarm (binary, calibrated via sigmoid) ───────────────
         # sklearn Pipeline bundles StandardScaler so inference receives raw
         # features and scaling is applied transparently inside the model.
         # Replaces uncalibrated XGBoost which produces 0%/100% probabilities
@@ -308,6 +371,7 @@ def main() -> None:
             pred_rf   = rf_alarm.predict(X_valid)
             scores_rf = rf_alarm.predict_proba(X_valid)[:, 1]
             metrics_rf = _log_clf_metrics(y_valid, pred_rf, scores_rf)
+            mlflow.log_metric("optimal_threshold", _optimal_threshold(y_valid, scores_rf))
             mlflow.sklearn.log_model(rf_alarm, artifact_path="model",
                                      registered_model_name="plant_alarm_rf_soft_alarm")
             _report(tmp, "rf_soft_alarm", metrics_rf)
@@ -464,6 +528,17 @@ def main() -> None:
                                      promote_metric, float(fc_metrics[promote_metric]))
 
         print("Training complete — all models registered in MLflow.")
+
+
+def _optimal_threshold(y_true: np.ndarray, scores: np.ndarray,
+                        low: float = 0.1, high: float = 0.9,
+                        n: int = 50) -> float:
+    """Return the decision threshold that maximises F1 on the validation set."""
+    thresholds = np.linspace(low, high, n)
+    best = max(thresholds,
+               key=lambda t: f1_score(y_true, (scores >= t).astype(int),
+                                      zero_division=0))
+    return float(best)
 
 
 def _latest_version(model_name: str) -> str:

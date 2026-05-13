@@ -82,6 +82,7 @@ services:
       AWS_ACCESS_KEY_ID:     "${AWS_ACCESS_KEY_ID:-minio}"
       AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-minio123}"
       MODEL_NAME:          plant_alarm_champion
+      ALARM_THRESHOLD:     "${ALARM_THRESHOLD:-0.43}"
       CORS_ORIGINS:        "http://localhost:5173"
     command: >
       sh -c "pip install --quiet --no-cache-dir -r /app/requirements.txt &&

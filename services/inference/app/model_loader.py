@@ -13,6 +13,22 @@ SENSOR_COLS = [
     "te301020", "pdt31008", "pdt31001", "pdt31007",
     "fq31050", "lt301031", "lic31012_pv", "lic31002_pv", "fic31011_pv",
 ]
+
+# Decision threshold for converting risk_score → alarm flag.
+# Override with ALARM_THRESHOLD env var (e.g. set to the val-set optimal value
+# logged by train_job.py as mlflow metric "optimal_threshold").
+_ALARM_THRESHOLD = float(os.getenv("ALARM_THRESHOLD", "0.5"))
+
+# For rolling-mean features: when the caller does not supply the rolling stat,
+# fall back to the corresponding instantaneous sensor reading (a reasonable
+# approximation for a "stable" single-point snapshot).
+_ROLL_MEAN_FALLBACK: dict[str, str] = {
+    "pdt31008_roll_mean":   "pdt31008",
+    "lt301031_roll_mean":   "lt301031",
+    "lic31002_pv_roll_mean":"lic31002_pv",
+    "fic31011_pv_roll_mean":"fic31011_pv",
+    "te301020_roll_mean":   "te301020",
+}
 WINDOW_SIZE = 12
 
 
@@ -86,22 +102,41 @@ def _score_from_model(model, frame: pd.DataFrame) -> float:
     return float(np.clip(val, 0.0, 1.0))
 
 
+def _fill_feature_row(features: dict[str, float], expected: list[str]) -> dict[str, float]:
+    """Build a feature dict with smart defaults for rolling/delta columns.
+
+    - roll_mean features: default to the corresponding raw sensor reading
+      (reasonable approximation when recent history is unavailable).
+    - roll_std / delta features: default to 0.0 (assume stable / no change).
+    - All other missing features: 0.0.
+    """
+    row: dict[str, float] = {}
+    for col in expected:
+        if col in features:
+            row[col] = float(features[col])
+        elif col in _ROLL_MEAN_FALLBACK:
+            row[col] = float(features.get(_ROLL_MEAN_FALLBACK[col], 0.0))
+        else:
+            row[col] = 0.0
+    return row
+
+
 def predict_risk(features: dict[str, float]) -> dict[str, float]:
     """Point-in-time risk prediction from a flat feature dict.
 
-    Missing features are filled with 0 so partial payloads don't crash;
-    extra keys are silently ignored.
+    Missing features use smart defaults (see _fill_feature_row); extra keys
+    are silently ignored.
     """
     model = load_champion_model()
     expected = _expected_feature_names(model)
     if expected is not None:
-        row = {col: float(features.get(col, 0.0)) for col in expected}
+        row = _fill_feature_row(features, expected)
         frame = pd.DataFrame([row], columns=expected)
     else:
         frame = pd.DataFrame([features])
 
     risk_score = _score_from_model(model, frame)
-    return {"risk_score": risk_score, "alarm": 1 if risk_score >= 0.5 else 0}
+    return {"risk_score": risk_score, "alarm": 1 if risk_score >= _ALARM_THRESHOLD else 0}
 
 
 def predict_forecast(

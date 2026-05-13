@@ -137,14 +137,26 @@ def main() -> None:
     if "day_of_week" not in df.columns:
         df["day_of_week"] = df["timestamp"].dt.dayofweek.astype("float32")
 
-    # Rolling 3-hour proxy (12-row window) on key sensors when present.
+    # Rolling 13-hour backward-looking window (causal: only uses past rows).
+    # lt301031 added because anomaly labeling used its rolling std (level swings).
+    # IMPORTANT: computed on the full temporal sequence BEFORE any split so that
+    # rows near the split boundary see the correct historical window.
     rolling_sources = [
-        c for c in ["pdt31008", "lic31002_pv", "fic31011_pv", "te301020"]
+        c for c in ["pdt31008", "lt301031", "lic31002_pv", "fic31011_pv", "te301020"]
         if c in df.columns
     ]
     for c in rolling_sources:
         df[f"{c}_roll_mean"] = df[c].rolling(window=13, min_periods=1).mean()
         df[f"{c}_roll_std"]  = df[c].rolling(window=13, min_periods=1).std().fillna(0.0)
+
+    # 1-hour rate-of-change for volatile sensors (causal: diff uses only the prior row).
+    # Captures rapid pressure/level ramps that precede alarm events.
+    delta_sources = [
+        c for c in ["pdt31008", "lt301031", "lic31002_pv"]
+        if c in df.columns
+    ]
+    for c in delta_sources:
+        df[f"{c}_delta"] = df[c].diff().fillna(0.0)
 
     # Failure frequency feature from labels.
     if "anomaly_label" not in df.columns:
