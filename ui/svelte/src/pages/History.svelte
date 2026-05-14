@@ -171,7 +171,7 @@
 </div>
 
 <style>
-  .page { padding: 24px; max-width: 1100px; }
+  .page { padding: 24px; max-width: 1100px; margin: 0 auto; }
 
   .page-header {
     display: flex;

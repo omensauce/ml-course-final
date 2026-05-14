@@ -36,3 +36,5 @@ infra/great_expectations/uncommitted/
 # OS
 .DS_Store
 Thumbs.db
+
+*.tex

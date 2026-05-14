@@ -183,23 +183,6 @@
 
           <p class="saved-note">✓ Saved to your inference history</p>
         </div>
-
-        {#if explainResult}
-          <div class="explain-panel">
-            <button class="explain-toggle" on:click={() => showLocalImportance = !showLocalImportance}>
-              <span>Feature Contributions (SHAP)</span>
-              <svg class="chevron" class:open={showLocalImportance} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
-            </button>
-            {#if showLocalImportance}
-              <p class="explain-hint">
-                Red = pushes toward alarm · Green = pushes toward normal · Values = actual sensor reading
-              </p>
-              <FeatureImportanceBar importances={explainResult.local_importance} mode="local" topN={12} />
-            {/if}
-          </div>
-        {/if}
       {:else if error}
         <div class="error-card">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="1.5">
@@ -219,6 +202,24 @@
       {/if}
     </div>
   </div>
+
+  <!-- Local SHAP contributions (shown after a prediction run) -->
+  {#if explainResult}
+    <div class="explain-panel">
+      <button class="explain-toggle" on:click={() => showLocalImportance = !showLocalImportance}>
+        <span>Feature Contributions (SHAP)</span>
+        <svg class="chevron" class:open={showLocalImportance} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      {#if showLocalImportance}
+        <p class="explain-hint">
+          Red = pushes toward alarm · Green = pushes toward normal · Values = actual sensor reading
+        </p>
+        <FeatureImportanceBar importances={explainResult.local_importance} mode="local" topN={12} />
+      {/if}
+    </div>
+  {/if}
 
   <!-- Global feature importance (lazy-loaded on first expand) -->
   <div class="global-panel">
@@ -245,7 +246,7 @@
 </div>
 
 <style>
-  .page { padding: 24px; max-width: 1100px; }
+  .page { padding: 24px; max-width: 1100px; margin: 0 auto; }
   .page-header { margin-bottom: 20px; }
   h2 { margin: 0; font-size: 1.3rem; color: #0f172a; }
   .sub { margin: 3px 0 0; font-size: 0.78rem; color: #64748b; }
@@ -381,9 +382,11 @@
 
   /* Interpretability panels */
   .explain-panel {
-    margin-top: 16px;
-    border-top: 1px solid #e2e8f0;
-    padding-top: 14px;
+    margin-top: 18px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 16px 18px;
   }
 
   .global-panel {

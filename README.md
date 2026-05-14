@@ -33,9 +33,10 @@ Notebooks ──► Labeled dataset ──► Airflow ETL (PySpark + SMOTE)
 5. [File-Drop ETL & Training Pipeline](#5-file-drop-etl--training-pipeline)
 6. [Frontend Stack](#6-frontend-stack)
 7. [Inference API Reference](#7-inference-api-reference)
-8. [Docker / Podman Interchangeability](#8-docker--podman-interchangeability)
-9. [Configuration Reference](#9-configuration-reference)
-10. [Key Files](#10-key-files)
+8. [Interpretability](#8-interpretability)
+9. [Docker / Podman Interchangeability](#9-docker--podman-interchangeability)
+10. [Configuration Reference](#10-configuration-reference)
+11. [Key Files](#11-key-files)
 
 ---
 
@@ -50,11 +51,12 @@ Notebooks ──► Labeled dataset ──► Airflow ETL (PySpark + SMOTE)
 | ML Infra | `mlflow` | MLflow 2.17 | Experiment tracking + model registry |
 | ML Infra | `airflow-webserver/scheduler` | Airflow 2.10 | ETL and training DAG orchestration |
 | ML Infra | `spark-master/worker` | Spark 3.5 | PySpark ETL and model training |
-| ML Infra | `prometheus` / `grafana` | Prom + Grafana | Inference metrics dashboards |
 | Frontend | `mock-sensor-api` | FastAPI | Simulated live plant sensor data |
 | Frontend | `frontend-api` | FastAPI + SQLite | JWT auth, inference history, live bridge |
 | Frontend | `inference-api` | FastAPI + MLflow | ML model serving (point-in-time + forecast) |
 | Frontend | `svelte-ui` | Svelte 4 + Vite | Browser UI — dashboard, history, predict |
+| Frontend | `prometheus` / `grafana` | Prom + Grafana | Inference + gateway metrics dashboards |
+| ML Infra | `prometheus` / `grafana` | Prom + Grafana | Same dashboards, full-stack variant (ports 9090/3000) |
 
 ### Data models
 
@@ -68,55 +70,65 @@ Nine instruments across two process units:
 
 ### Prerequisites
 
-- Docker or Podman (see [§8](#8-docker--podman-interchangeability) for differences)
-- `docker compose` v2 **or** `podman-compose` ≥ 1.0 (`pip install podman-compose`)
+- Podman + `podman-compose` ≥ 1.0 (`pip install podman-compose`)
 - 8 GB RAM available (Spark + Airflow are the heavy hitters)
-- For notebooks only (no containers): Python ≥ 3.11
 
-### Option A — Full ML stack + frontend (recommended)
+**Windows/WSL2 — verify DNS before starting** (services install packages at startup and
+will exit silently if DNS is broken):
+```powershell
+podman machine ssh "getent hosts pypi.org"
+```
+If this returns an error instead of an IP address, follow the fix in
+[§9 — DNS failure](#internet-access-for-containers-podman-on-wsl2) before proceeding.
 
-```bash
-# 1. Copy env template
-cp infra/.env.example infra/.env       # bash/mac
-# or
-Copy-Item infra/.env.example infra/.env   # PowerShell
+### Step 1 — Frontend stack (self-contained, no ML infra required)
 
-# 2. Start the frontend demo stack (no heavy infra required)
-docker compose -f infra/compose.frontend.yml up -d
-# → Svelte UI: http://localhost:5173
-# → frontend-api: http://localhost:7501
-# → mock-sensor-api: http://localhost:7500
-# → inference-api: http://localhost:7502  (models load when MLflow is reachable)
-
-# 3. Start the ML infrastructure (postgres, minio, mlflow, airflow, spark)
-docker compose --env-file infra/.env -f infra/compose.yml up -d \
-    postgres minio minio_bootstrap mlflow \
-    airflow-init airflow-webserver airflow-scheduler \
-    spark-master spark-worker file-watcher \
-    prometheus grafana
+```powershell
+podman-compose -f infra/compose.frontend.yml up -d
 ```
 
-### Option B — Notebooks only (no containers)
+> If the ML infra stack (`compose.yml`) is already running on this machine, add
+> `-p alarm-frontend` to avoid container-name collisions:
+> ```powershell
+> podman-compose -p alarm-frontend -f infra/compose.frontend.yml up -d
+> ```
+
+Services started: Svelte UI · Frontend API · Mock Sensor API · Inference API · Prometheus · Grafana
+
+### Step 2 — ML infrastructure (needed for live model inference)
+
+```powershell
+Copy-Item infra/.env.example infra/.env   # first time only
+
+podman-compose --env-file infra/.env -f infra/compose.yml up -d `
+    postgres minio minio_bootstrap mlflow `
+    airflow-init airflow-webserver airflow-scheduler `
+    spark-master spark-worker file-watcher
+```
+
+### Step 3 — Notebooks only (no containers)
 
 ```bash
 pip install mlflow xgboost lightgbm scikit-learn imbalanced-learn pandas numpy
 # Open notebooks in order: 01_eda → 02_models → 03_validation
 ```
 
-### Makefile shortcuts (Docker / Podman switchable)
-
-```bash
-make init            # copy .env.example → infra/.env
-make up              # start full stack (docker)
-make up ENGINE=podman   # start full stack (podman-compose)
-make down
-make logs
-make ps
-```
-
 ---
 
 ## 3. Service URLs
+
+### Frontend stack
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| Svelte UI | http://localhost:5173 | Main browser UI |
+| Grafana | http://localhost:7504 | Risk overview dashboard (no login) |
+| Prometheus | http://localhost:7503 | Raw metrics + target health |
+| Frontend API | http://localhost:7501 | Auth + history + inference bridge |
+| Mock Sensor API | http://localhost:7500 | Simulated live sensor data |
+| Inference API | http://localhost:7502 | ML model endpoints |
+
+> Ports 7500–7504 are used to avoid the Hyper-V exclusion zone (7914–8813) on Windows.
 
 ### ML Infrastructure stack
 
@@ -125,24 +137,11 @@ make ps
 | MLflow | http://localhost:5000 | — |
 | Airflow | http://localhost:8080 | `admin` / `admin` |
 | MinIO Console | http://localhost:9001 | `minio` / `minio123` |
-| Grafana | http://localhost:3000 | `admin` / `admin` |
-| Prometheus | http://localhost:9090 | — |
 | Spark Master UI | http://localhost:8081 | — |
 
-> **Windows / Hyper-V note:** Ports 7914–8813 are reserved by Hyper-V on most Windows 10/11
-> machines. If Airflow (8080) or Spark UI (8081) are inaccessible, use the CLI instead of the
-> browser. See [§8](#8-docker--podman-interchangeability) for details.
-
-### Frontend stack
-
-| Service | URL | Notes |
-|---------|-----|-------|
-| Svelte UI | http://localhost:5173 | Main browser UI |
-| Frontend API | http://localhost:7501 | Auth + history + inference bridge |
-| Mock Sensor API | http://localhost:7500 | Simulated live sensor data |
-| Inference API | http://localhost:7502 | ML model endpoints |
-
-> Port range 7500–7502 is used specifically to avoid the Hyper-V exclusion zone on Windows.
+> **Windows / Hyper-V note:** Ports 8080 and 8081 fall inside the Hyper-V exclusion zone on
+> many Windows 10/11 machines. If they are inaccessible, use the Airflow CLI instead of the
+> browser. See [§9](#9-docker--podman-interchangeability) for details.
 
 ---
 
@@ -238,7 +237,7 @@ curl -X POST http://localhost:5000/api/2.0/mlflow/registered-models/alias \
 ## 6. Frontend Stack
 
 The frontend stack (`infra/compose.frontend.yml`) is self-contained and runs independently
-of the heavy ML infrastructure. It brings up four services:
+of the heavy ML infrastructure. It brings up six services:
 
 ### Mock Sensor API (`mock_sensor_api.py`) — port 7500
 
@@ -277,6 +276,8 @@ FastAPI service that loads models from the MLflow registry:
 | `POST /predict` | Point-in-time risk score from flat feature vector |
 | `POST /forecast` | Sliding-window early-warning (horizon 1/3/6 h) |
 | `POST /recommend` | Rule-based maintenance recommendation |
+| `POST /explain` | Local SHAP feature importance for one prediction |
+| `GET /global_importance` | Global feature importances from the champion model |
 | `GET /models` | Lists all expected models and their load status |
 | `GET /metrics` | Prometheus metrics |
 
@@ -284,15 +285,33 @@ Set `MLFLOW_TRACKING_URI` in `infra/compose.frontend.yml` (or `infra/.env`) to p
 inference-api at a running MLflow instance. When MLflow is unreachable the API still starts
 and returns `503` for model-dependent endpoints — the UI shows the error gracefully.
 
+### Prometheus (`infra/prometheus/`) — port 7503
+
+Scrapes three targets every 15 s:
+
+| Job | Target | Key metrics |
+|-----|--------|-------------|
+| `inference-api` | `:8000/metrics` | `inference_requests_total`, `inference_last_risk_score`, `inference_latency_seconds` |
+| `frontend-api` | `:8001/metrics` | `gateway_infer_total{type}`, `gateway_infer_latency_seconds{type}` |
+| `mock-sensor-api` | `:8002/metrics` | `sensor_live_reads_total`, `sensor_scenario_activations_total{scenario}` |
+
+### Grafana (`infra/grafana/`) — port 7504
+
+Opens without login (anonymous admin). The provisioned **Plant Alarm Risk Overview** dashboard has 10 panels across three rows:
+
+- **Row 1** — Last risk score (colour-coded gauge), inference request rate, high-risk alert rate
+- **Row 2** — P95 latency (inference-api + gateway overlaid), cumulative request totals
+- **Row 3** — Gateway infer rate by type (stacked), gateway P95 latency by type, sensor live/history read rates, scenario activation counts
+
 ### Svelte UI (`ui/svelte/`) — port 5173
 
 Four pages, auth-gated (JWT stored in `localStorage`):
 
 | Page | Description |
 |------|-------------|
-| **Dashboard** | Live 9-sensor grid (2 s poll), scenario switcher, auto-inference toggle, real-time risk chart |
+| **Dashboard** | Live 9-sensor grid (2 s poll), scenario switcher, auto-inference toggle, real-time risk chart, top-3 SHAP drivers after each auto-inference |
 | **History** | Table + SVG risk-over-time chart of all past inferences, filterable by type |
-| **Predict** | Manual point-in-time prediction form (normal + high-risk presets) |
+| **Predict** | Manual point-in-time prediction form (normal + high-risk presets); local SHAP panel + collapsible global importance chart after each prediction |
 | **Forecast** | Horizon forecast (+1/3/6 h) with pre-loaded escalating-pressure scenario |
 
 ```bash
@@ -330,7 +349,113 @@ curl -X POST http://localhost:7502/forecast \
 
 ---
 
-## 8. Docker / Podman Interchangeability
+## 8. Interpretability
+
+The inference API exposes two endpoints that explain model predictions without requiring any additional client-side dependencies.
+
+### `POST /explain` — local SHAP (per-prediction)
+
+Returns SHAP values for a single feature vector, computed with `shap.TreeExplainer` on the champion model's underlying tree estimator. The endpoint handles all wrapper layers automatically:
+
+```
+MLflow pyfunc → _SklearnModelWrapper.sklearn_model
+  → sklearn Pipeline (StandardScaler → CalibratedClassifierCV)
+    → CalibratedClassifierCV.calibrated_classifiers_[0].estimator
+      → RandomForestClassifier  ← TreeExplainer runs here
+```
+
+Input data is transformed through the Pipeline's preprocessor (StandardScaler) before SHAP computation so feature-space semantics are preserved.
+
+**Request / response:**
+
+```bash
+curl -X POST http://localhost:7502/explain \
+  -H 'Content-Type: application/json' \
+  -d '{"features": {"te301020": 107.2, "pdt31008": 225.0, ...}}'
+# → {
+#     "local_importance": [
+#       {"feature": "te301020_roll_mean", "value": 107.2,  "shap_value": -0.0897},
+#       {"feature": "pdt31008_roll_std",  "value": 14.8,   "shap_value": -0.0691},
+#       ...
+#     ],
+#     "base_value": 0.4987,
+#     "method": "shap_tree"
+#   }
+```
+
+Items are sorted by `|shap_value|` descending. Positive SHAP = pushes toward alarm; negative = pushes toward normal. `base_value` is the expected model output over the training set.
+
+### `GET /global_importance` — model-level feature importance
+
+Returns the champion model's `feature_importances_` (mean impurity decrease across all trees), sorted descending.
+
+```bash
+curl http://localhost:7502/global_importance
+# → {
+#     "importances": [
+#       {"feature": "pdt31008_roll_std",  "importance": 0.1813},
+#       {"feature": "te301020_roll_mean", "importance": 0.1709},
+#       {"feature": "day_of_week",        "importance": 0.0980},
+#       ...
+#     ],
+#     "method": "feature_importances"
+#   }
+```
+
+Both endpoints return `{"method": "unavailable"}` when no champion model is loaded (e.g. the frontend-only stack without a running MLflow instance).
+
+### Frontend proxy
+
+The frontend API exposes authenticated proxies at:
+
+| Frontend endpoint | Proxies to | Auth |
+|---|---|---|
+| `POST /infer/explain` | `POST /explain` | JWT required |
+| `GET /infer/global_importance` | `GET /global_importance` | JWT required |
+
+Neither call is written to the inference history (explain results are transient UI state).
+
+### UI integration
+
+**Predict page:**  after each prediction, `/infer/explain` fires in parallel with `/infer/predict`. The result is shown as a collapsible diverging bar chart (`FeatureImportanceBar.svelte`):
+- **Red bars** extend right → feature pushes toward alarm
+- **Green bars** extend left → feature pushes toward normal
+- Actual sensor value shown alongside each bar
+
+A second collapsible "Model Feature Importance (Global)" card lazy-loads on first expand using `/infer/global_importance`.
+
+**Dashboard:**  after each auto-inference, the top-3 SHAP drivers from the returned `sensor_snapshot` are shown next to the risk gauge as coloured dots + sensor name + SHAP value.
+
+### Observed results (fresh run, champion = RandomForest)
+
+**Global importance — top 5:**
+
+| Feature | Importance |
+|---------|-----------|
+| `pdt31008_roll_std` | 0.1813 |
+| `te301020_roll_mean` | 0.1709 |
+| `day_of_week` | 0.0980 |
+| `pdt31001` | 0.0814 |
+| `fic31011_op` | 0.0671 |
+
+Pressure-differential volatility (`pdt31008_roll_std`) and amine-temperature trend (`te301020_roll_mean`) account for 35% of total impurity decrease — consistent with the two dominant anomaly patterns in the dataset (flooding-driven pressure spikes and temperature-driven absorption failures).
+
+**Local SHAP — normal vs. high-risk:**
+
+| Feature | Normal (shap) | High-risk (shap) |
+|---------|-------------|-----------------|
+| `te301020_roll_mean` | −0.090 | **+0.077** |
+| `pdt31008_roll_std` | −0.069 | −0.054 |
+| `day_of_week` | −0.040 | — |
+| `lic31002_pv_roll_std` | — | −0.048 |
+| `pdt31007` | — | +0.023 |
+
+`te301020_roll_mean` flips sign between scenarios — negative (stabilising) at normal temperature 107.2 °C, positive (alarm-driving) at elevated temperature 109.5 °C — which matches the physical understanding that DEA absorber flooding is temperature-sensitive.
+
+---
+
+## 9. Docker / Podman Interchangeability
+
 
 The compose files in this project work with **both Docker and Podman** with minimal changes.
 This section documents the differences and how to handle each.
@@ -426,13 +551,45 @@ creates a relay from `127.0.0.1:PORT` on Windows to the WSL2 VM. Key behaviours:
   ```
   Rootless mode does not have this issue.
 
-### Internet access for containers (rootful Podman on WSL2)
+### Internet access for containers (Podman on WSL2)
+
+#### DNS failure — rootless mode (Windows 10/11)
+
+**Symptom:** `pip install` or `apk add` fails with `Temporary failure in name resolution`
+even though `ping 8.8.8.8` works from inside the VM.
+
+**Cause:** WSL2 auto-generates `/etc/resolv.conf` pointing to the WSL2 virtual gateway
+(e.g. `172.24.192.1`). Windows Firewall blocks port 53 on that address from inside
+containers, so DNS queries time out while raw IP traffic flows fine.
+
+**Fix — override DNS before starting the stack:**
+```powershell
+# 1. Set public DNS servers in the Podman VM
+podman machine ssh "sudo bash -c 'echo nameserver 8.8.8.8 > /etc/resolv.conf && echo nameserver 1.1.1.1 >> /etc/resolv.conf'"
+
+# 2. Prevent WSL from regenerating resolv.conf on next boot
+podman machine ssh "sudo bash -c 'printf \"[network]\ngenerateResolvConf = false\n\" >> /etc/wsl.conf'"
+
+# 3. Verify — should print a pypi.org IP, not an error
+podman machine ssh "getent hosts pypi.org"
+```
+
+Step 2 is persistent across machine restarts. If you ever reset the Podman VM you will
+need to re-apply it.
+
+If DNS was already broken when you tried to start the stack, some containers will have
+exited. After applying the fix, restart the Podman machine and bring the stack up again:
+```powershell
+podman machine stop && podman machine start
+podman-compose --env-file infra/.env -f infra/compose.yml up -d
+```
+
+#### No masquerade rule — rootful mode
 
 In rootful Podman mode on WSL2, newly created bridge networks may not have a masquerade
-(NAT) rule for outbound internet traffic. Symptom: `pip install` inside a container fails
-with `Network is unreachable`.
+(NAT) rule for outbound internet traffic. Symptom: `pip install` fails with
+`Network is unreachable` (different from the DNS error above — raw IP also fails).
 
-Diagnosis and fix:
 ```bash
 # Check masquerade rules inside WSL2
 podman machine ssh -- "nft list chain ip nat POSTROUTING"
@@ -440,9 +597,6 @@ podman machine ssh -- "nft list chain ip nat POSTROUTING"
 # Add the missing rule if absent (replace 10.89.1.0/24 with your bridge subnet)
 podman machine ssh -- "nft add rule ip nat POSTROUTING ip saddr 10.89.1.0/24 oifname eth0 masquerade"
 ```
-
-In **rootless** mode this does not occur — outbound traffic is handled via `pasta`
-(user-space networking) which always has internet access.
 
 ### Volume mounts
 
@@ -474,7 +628,7 @@ volumes:
 
 ---
 
-## 9. Configuration Reference
+## 10. Configuration Reference
 
 All settings in `infra/.env` (copy from `infra/.env.example`).
 
@@ -504,7 +658,7 @@ All settings in `infra/.env` (copy from `infra/.env.example`).
 
 ---
 
-## 10. Key Files
+## 11. Key Files
 
 ```
 submission/
@@ -520,7 +674,7 @@ submission/
 │
 ├── infra/
 │   ├── compose.yml                   Full ML infrastructure (12 services)
-│   ├── compose.frontend.yml          Lightweight frontend demo (4 services)
+│   ├── compose.frontend.yml          Self-contained frontend stack (6 services incl. Prometheus + Grafana)
 │   ├── .env.example                  Environment variable template
 │   ├── airflow/dags/
 │   │   ├── ingest_etl_dag.py         File-drop → validation → PySpark ETL
@@ -529,8 +683,8 @@ submission/
 │   │   ├── etl_job.py                SMOTE + rolling features + MinIO upload
 │   │   └── train_job.py              Train 8 models, register in MLflow
 │   ├── great_expectations/           Data quality gate (6 expectations)
-│   ├── grafana/                      Provisioned "Plant Alarm Risk Overview" dashboard
-│   ├── prometheus/prometheus.yml     Scrape config (inference-api every 15 s)
+│   ├── grafana/                      Provisioned "Plant Alarm Risk Overview" dashboard (10 panels)
+│   ├── prometheus/prometheus.yml     Scrape config (inference-api, frontend-api, mock-sensor-api)
 │   ├── nginx/nginx.conf              Reverse proxy (UI + /api/* routing)
 │   └── watcher/watch-and-trigger.sh  inotifywait → Airflow REST API
 │

@@ -19,6 +19,8 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
 app = FastAPI(title="Mock Plant Sensor API", version="1.0.0")
@@ -56,29 +58,52 @@ SCENARIOS: dict[str, dict] = {
         "description": "PDT31008 building — potential column flooding",
         "color": "amber",
         "modifiers": {
-            "pdt31008": {"drift_rate": 6.0,  "drift_cap": 90.0,  "noise_mult": 2.5},
-            "fq31050":  {"drift_rate": -0.5, "drift_cap": -5.0,  "noise_mult": 1.5},
+            # drift_rate = max drift reached after 60 s (drift_cap is a safety ceiling only)
+            "pdt31008": {"drift_rate": 80.0, "drift_cap": 90.0,  "noise_mult": 2.5},
+            "fq31050":  {"drift_rate": -5.0, "drift_cap": -5.0,  "noise_mult": 1.5},
         },
     },
     "level_swing": {
         "description": "LT301031 oscillating — reboiler instability",
         "color": "amber",
         "modifiers": {
-            "lt301031":    {"oscillate_amp": 28.0, "oscillate_period": 30, "noise_mult": 3.0},
-            "lic31012_pv": {"drift_rate": -1.0, "drift_cap": -8.0, "noise_mult": 1.5},
+            "lt301031":    {"oscillate_amp": 40.0, "oscillate_period": 30, "noise_mult": 3.0},
+            "lic31012_pv": {"drift_rate": -8.0, "drift_cap": -8.0, "noise_mult": 1.5},
         },
     },
     "multi_alarm": {
         "description": "Multiple sensors critical — high alarm probability",
         "color": "red",
         "modifiers": {
-            "pdt31008":    {"drift_rate": 10.0, "drift_cap": 130.0, "noise_mult": 3.0},
-            "lt301031":    {"oscillate_amp": 35.0, "oscillate_period": 20, "noise_mult": 4.0},
-            "lic31002_pv": {"drift_rate": 4.0,  "drift_cap": 20.0,  "noise_mult": 2.0},
-            "te301020":    {"drift_rate": 0.8,  "drift_cap": 4.0,   "noise_mult": 1.5},
+            # Values calibrated to match training-data alarm ranges and provide
+            # wtrend / wstd signals the sliding-window forecaster relies on.
+            # The 96 s oscillation on pdt31008 creates a 60–80 mbar rising/falling
+            # trend within any 24 s window (12 readings × 2 s), which is the same
+            # feature range that puts the 1-hour forecaster above the alarm threshold.
+            #   pdt31008 → 305±80 mbar  (alarm range 85–378 in dataset)
+            #   te301020 → 115±5 °C     (above normal max 110.8; alarm range 98–118)
+            #   lt301031 oscillates 4–84 % (alarm range 6–102 in dataset)
+            "pdt31008":    {"drift_rate": 80.0, "drift_cap": 130.0, "noise_mult": 2.0,
+                            "oscillate_amp": 80.0, "oscillate_period": 96},
+            "lt301031":    {"oscillate_amp": 40.0, "oscillate_period": 20, "noise_mult": 3.0},
+            "lic31002_pv": {"drift_rate": 20.0, "drift_cap": 20.0,  "noise_mult": 2.0},
+            "te301020":    {"drift_rate": 8.0,  "drift_cap": 8.0,   "noise_mult": 1.0,
+                            "oscillate_amp": 5.0, "oscillate_period": 120},
         },
     },
 }
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+_live_reads    = Counter("sensor_live_reads_total",    "Calls to /sensors/live")
+_history_reads = Counter("sensor_history_reads_total", "Calls to /sensors/history")
+_scenario_activations = Counter(
+    "sensor_scenario_activations_total",
+    "Scenario activation counts by name",
+    ["scenario"],
+)
+# Pre-create label combos so they appear in /metrics from startup
+for _s in SCENARIOS:
+    _scenario_activations.labels(scenario=_s)
 
 # ── Runtime state ─────────────────────────────────────────────────────────────
 _state: dict = {"scenario": "normal", "scenario_start": time.time()}
@@ -129,9 +154,15 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/sensors/live")
 def get_live():
     """Return a fresh sensor snapshot and append it to rolling history."""
+    _live_reads.inc()
     reading = _make_reading()
     _history.append(reading)
     sc = _state["scenario"]
@@ -146,6 +177,7 @@ def get_live():
 @app.get("/sensors/history")
 def get_history(n: int = 60):
     """Return the last n readings (default 60, max 600)."""
+    _history_reads.inc()
     n = min(n, 600)
     items = list(_history)[-n:]
     return {"readings": items, "count": len(items)}
@@ -169,6 +201,12 @@ def activate_scenario(body: ScenarioRequest):
                             f"Valid: {list(SCENARIOS)}")
     _state["scenario"]       = body.name
     _state["scenario_start"] = time.time()
+    _scenario_activations.labels(scenario=body.name).inc()
+    # Reset history so old scenario readings don't contaminate the new scenario's
+    # forecast window — pre-populate with fresh readings for the new scenario.
+    _history.clear()
+    for _ in range(90):
+        _history.append(_make_reading())
     return {"active": body.name, "description": SCENARIOS[body.name]["description"]}
 
 

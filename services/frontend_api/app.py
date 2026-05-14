@@ -16,15 +16,18 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -44,6 +47,15 @@ app.add_middleware(
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _oauth = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+_infer_total = Counter(
+    "gateway_infer_total", "Inference requests through gateway", ["type"]
+)
+_infer_latency = Histogram(
+    "gateway_infer_latency_seconds", "Gateway inference latency in seconds", ["type"],
+    buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+)
 
 # ── SQLite bootstrap ──────────────────────────────────────────────────────────
 def _conn() -> sqlite3.Connection:
@@ -150,6 +162,11 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/auth/me")
 def me(user: dict = Depends(_current_user)):
     return {"id": user["id"], "username": user["username"], "created": user["created"]}
@@ -174,6 +191,7 @@ class ForecastIn(BaseModel):
 @app.post("/infer/predict")
 def infer_predict(body: PredictIn, user: dict = Depends(_current_user)):
     """Call inference /predict, fetch recommendation, store result, return to client."""
+    t0 = time.time()
     try:
         pr = httpx.post(
             f"{INFERENCE_API}/predict",
@@ -201,12 +219,15 @@ def infer_predict(body: PredictIn, user: dict = Depends(_current_user)):
         pred["recommendation"] = ""
 
     _store(user["id"], "predict", body.features, pred)
+    _infer_total.labels(type="predict").inc()
+    _infer_latency.labels(type="predict").observe(time.time() - t0)
     return pred
 
 
 @app.post("/infer/forecast")
 def infer_forecast(body: ForecastIn, user: dict = Depends(_current_user)):
     """Call inference /forecast, store result, return to client."""
+    t0 = time.time()
     try:
         r = httpx.post(
             f"{INFERENCE_API}/forecast",
@@ -226,6 +247,8 @@ def infer_forecast(body: ForecastIn, user: dict = Depends(_current_user)):
         {"horizon": body.horizon, "n_obs": len(body.recent_observations)},
         result,
     )
+    _infer_total.labels(type="forecast").inc()
+    _infer_latency.labels(type="forecast").observe(time.time() - t0)
     return result
 
 
@@ -235,6 +258,7 @@ def auto_infer(user: dict = Depends(_current_user)):
     Fetch live sensor history → run 1-hour forecast → store and return result.
     Requires mock_sensor_api and inference API to be running.
     """
+    t0 = time.time()
     # 1. Pull the last 20 readings from the mock sensor API
     try:
         sr = httpx.get(f"{SENSOR_API}/sensors/history?n=20", timeout=5)
@@ -271,6 +295,8 @@ def auto_infer(user: dict = Depends(_current_user)):
     result["sensor_snapshot"] = {k: latest.get(k) for k in FORECAST_KEYS}
 
     _store(user["id"], "auto_1h", {"source": "live_sensor", "n_obs": len(obs)}, result)
+    _infer_total.labels(type="auto").inc()
+    _infer_latency.labels(type="auto").observe(time.time() - t0)
     return result
 
 

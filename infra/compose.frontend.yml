@@ -23,7 +23,7 @@ services:
     volumes:
       - ../:/workspace
     command: >
-      sh -c "pip install --quiet --no-cache-dir fastapi uvicorn &&
+      sh -c "pip install --quiet --no-cache-dir fastapi uvicorn prometheus-client &&
              uvicorn mock_sensor_api:app --host 0.0.0.0 --port 8002"
     ports:
       - "7500:8002"
@@ -96,6 +96,34 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
+    networks: [frontend_net]
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  prometheus:
+    image: docker.io/prom/prometheus:v2.52.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+      - --web.enable-lifecycle
+    ports:
+      - "7503:9090"
+    networks: [frontend_net]
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  grafana:
+    image: docker.io/grafana/grafana:11.0.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "7504:3000"
+    depends_on: [prometheus]
     networks: [frontend_net]
 
   # ── Svelte dev UI ────────────────────────────────────────────────────────────

@@ -85,13 +85,20 @@ def _score_from_model(model, frame: pd.DataFrame) -> float:
     (0 or 1), not a probability. We try predict_proba on the underlying
     sklearn object first; if unavailable, fall back to predict() which may
     still return a calibrated float for custom pyfunc flavors.
+
+    Forecaster models were trained on unnamed numpy arrays, so if predict_proba
+    fails with a named DataFrame (feature-name mismatch in XGBoost), we retry
+    with frame.values to strip column names.
     """
     try:
         impl = model._model_impl
         for attr in ("sklearn_model", "xgb_model", "_model"):
             underlying = getattr(impl, attr, None)
             if underlying is not None and hasattr(underlying, "predict_proba"):
-                proba = underlying.predict_proba(frame)
+                try:
+                    proba = underlying.predict_proba(frame)
+                except Exception:
+                    proba = underlying.predict_proba(frame.values)
                 # proba shape: (n_samples, n_classes) — column 1 is P(alarm)
                 return float(np.clip(proba[0, 1], 0.0, 1.0))
     except Exception:
@@ -312,16 +319,10 @@ def predict_forecast(
                  [f"{s}_wtrend" for s in SENSOR_COLS])
     frame = pd.DataFrame(features, columns=raw_cols + stat_cols)
 
-    prob_raw = fc_model.predict(frame)
-    if hasattr(prob_raw, "tolist"):
-        prob = float(prob_raw.tolist()[0])
-    else:
-        prob = float(prob_raw[0])
-
-    prob = max(0.0, min(1.0, prob))
+    prob = _score_from_model(fc_model, frame)
     return {
         "anomaly_probability": prob,
-        "alarm": 1 if prob >= 0.5 else 0,
+        "alarm": 1 if prob >= _ALARM_THRESHOLD else 0,
         "horizon_hours": horizon,
         "n_observations": len(recent_observations),
     }

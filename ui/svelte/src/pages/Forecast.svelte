@@ -151,7 +151,7 @@
 </div>
 
 <style>
-  .page { padding: 24px; max-width: 1100px; }
+  .page { padding: 24px; max-width: 1100px; margin: 0 auto; }
   .page-header { margin-bottom: 20px; }
   h2 { margin: 0; font-size: 1.3rem; color: #0f172a; }
   .sub { margin: 3px 0 0; font-size: 0.78rem; color: #64748b; max-width: 640px; }

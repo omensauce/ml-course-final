@@ -5,7 +5,7 @@
   "tags": ["ml", "alarm", "inference"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "15s",
   "panels": [
     {
@@ -14,14 +14,24 @@
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
       "targets": [
         { "expr": "inference_last_risk_score", "refId": "A" }
-      ]
+      ],
+      "options": {
+        "colorMode": "background",
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.43 },
+            { "color": "red", "value": 0.7 }
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Inference Request Rate (5m)",
       "gridPos": { "h": 6, "w": 9, "x": 6, "y": 0 },
       "targets": [
-        { "expr": "rate(inference_requests_total[5m])", "refId": "A" }
+        { "expr": "rate(inference_requests_total[5m])", "legendFormat": "inference-api", "refId": "A" }
       ]
     },
     {
@@ -29,7 +39,7 @@
       "title": "High Risk Alerts (5m)",
       "gridPos": { "h": 6, "w": 9, "x": 15, "y": 0 },
       "targets": [
-        { "expr": "rate(inference_high_risk_total[5m])", "refId": "A" }
+        { "expr": "rate(inference_high_risk_total[5m])", "legendFormat": "high-risk", "refId": "A" }
       ]
     },
     {
@@ -39,7 +49,13 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum(rate(inference_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "inference-api p95",
           "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(gateway_infer_latency_seconds_bucket[5m])) by (le, type))",
+          "legendFormat": "gateway {{type}} p95",
+          "refId": "B"
         }
       ]
     },
@@ -48,7 +64,63 @@
       "title": "Total Requests",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 6 },
       "targets": [
-        { "expr": "inference_requests_total", "refId": "A" }
+        { "expr": "inference_requests_total", "legendFormat": "inference-api total", "refId": "A" },
+        { "expr": "gateway_infer_total", "legendFormat": "gateway {{type}}", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway Infer Request Rate by Type (5m)",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 13 },
+      "targets": [
+        {
+          "expr": "rate(gateway_infer_total[5m])",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "stacking": { "mode": "normal" } } }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway P95 Latency by Type",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 13 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(gateway_infer_latency_seconds_bucket[5m])) by (le, type))",
+          "legendFormat": "{{type}} p95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sensor Live Reads (5m)",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "rate(sensor_live_reads_total[5m])", "legendFormat": "live reads/s", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sensor History Reads (5m)",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 20 },
+      "targets": [
+        { "expr": "rate(sensor_history_reads_total[5m])", "legendFormat": "history reads/s", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Scenario Activations (cumulative)",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 20 },
+      "targets": [
+        {
+          "expr": "sensor_scenario_activations_total",
+          "legendFormat": "{{scenario}}",
+          "refId": "A"
+        }
       ]
     }
   ]

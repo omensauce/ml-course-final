@@ -248,7 +248,7 @@
 </div>
 
 <style>
-  .page { padding: 24px; max-width: 1120px; }
+  .page { padding: 24px; max-width: 1120px; margin: 0 auto; }
 
   .page-header {
     display: flex;
