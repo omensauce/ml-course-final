@@ -253,11 +253,20 @@ services:
   mock-sensor-api:
     image: docker.io/library/python:3.11-slim
     working_dir: /workspace
+    environment:
+      MINIO_ENABLED:        "true"
+      MINIO_ENDPOINT:       http://minio:9000
+      MINIO_ACCESS_KEY:     minio
+      MINIO_SECRET_KEY:     minio123
+      MINIO_BUCKET:         raw
+      MINIO_FLUSH_INTERVAL: "60"
     volumes:
       - ../:/workspace
     command: >
-      sh -c "pip install --quiet --no-cache-dir fastapi uvicorn prometheus-client &&
+      sh -c "pip install --quiet --no-cache-dir fastapi uvicorn prometheus-client boto3 &&
              uvicorn mock_sensor_api:app --host 0.0.0.0 --port 8002"
+    depends_on:
+      - minio
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
@@ -274,16 +283,20 @@ services:
       - ../services/frontend_api:/app
       - frontend_db:/data
     environment:
-      INFERENCE_API_URL: http://inference-api:8000
-      SENSOR_API_URL:    http://mock-sensor-api:8002
-      DB_PATH:           /data/frontend.db
-      JWT_SECRET:        change-me-in-production
+      INFERENCE_API_URL:      http://inference-api:8000
+      SENSOR_API_URL:         http://mock-sensor-api:8002
+      DB_PATH:                /data/frontend.db
+      JWT_SECRET:             change-me-in-production
+      MLFLOW_TRACKING_URI:    http://mlflow:5000
+      MLFLOW_LOGGING_ENABLED: "true"
     command: >
       sh -c "pip install --quiet --no-cache-dir -r requirements.txt &&
              uvicorn app:app --host 0.0.0.0 --port 8001"
     depends_on:
       mock-sensor-api:
         condition: service_healthy
+      mlflow:
+        condition: service_started
     networks: [alarm_net]
 
   svelte-ui:

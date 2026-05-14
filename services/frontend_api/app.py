@@ -35,9 +35,15 @@ SECRET_KEY    = os.getenv("JWT_SECRET",           "dev-secret-change-in-producti
 ALGORITHM     = "HS256"
 TOKEN_MINUTES = 60 * 24  # 24 hours
 
-INFERENCE_API = os.getenv("INFERENCE_API_URL", "http://localhost:8000")
-SENSOR_API    = os.getenv("SENSOR_API_URL",    "http://localhost:8002")
-DB_PATH       = Path(os.getenv("DB_PATH",      "frontend.db"))
+INFERENCE_API  = os.getenv("INFERENCE_API_URL",       "http://localhost:8000")
+SENSOR_API     = os.getenv("SENSOR_API_URL",          "http://localhost:8002")
+DB_PATH        = Path(os.getenv("DB_PATH",            "frontend.db"))
+MLFLOW_URI     = os.getenv("MLFLOW_TRACKING_URI",     "")
+MLFLOW_LOGGING = os.getenv("MLFLOW_LOGGING_ENABLED",  "false").lower() == "true"
+
+if MLFLOW_LOGGING and MLFLOW_URI:
+    import mlflow as _mlflow
+    _mlflow.set_tracking_uri(MLFLOW_URI)
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Plant Alarm Frontend API", version="1.0.0")
@@ -56,6 +62,7 @@ _infer_latency = Histogram(
     "gateway_infer_latency_seconds", "Gateway inference latency in seconds", ["type"],
     buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
 )
+_mlflow_logs = Counter("gateway_mlflow_logs_total", "MLflow runs logged from live inference")
 
 # ── SQLite bootstrap ──────────────────────────────────────────────────────────
 def _conn() -> sqlite3.Connection:
@@ -297,6 +304,24 @@ def auto_infer(user: dict = Depends(_current_user)):
     _store(user["id"], "auto_1h", {"source": "live_sensor", "n_obs": len(obs)}, result)
     _infer_total.labels(type="auto").inc()
     _infer_latency.labels(type="auto").observe(time.time() - t0)
+
+    if MLFLOW_LOGGING and MLFLOW_URI:
+        try:
+            sc_r = httpx.get(f"{SENSOR_API}/scenarios", timeout=3)
+            active_sc = sc_r.json().get("active", "unknown") if sc_r.is_success else "unknown"
+            _mlflow.set_experiment("live_sensor_inference")
+            with _mlflow.start_run(run_name="auto_1h"):
+                _mlflow.set_tag("scenario", active_sc)
+                _mlflow.log_metric("anomaly_probability",
+                                   float(result.get("anomaly_probability", 0)))
+                _mlflow.log_metric("alarm", int(result.get("alarm", 0)))
+                for sensor_key, val in result.get("sensor_snapshot", {}).items():
+                    if val is not None:
+                        _mlflow.log_metric(sensor_key, float(val))
+            _mlflow_logs.inc()
+        except Exception:
+            pass  # best-effort; don't fail the user request on MLflow hiccup
+
     return result
 
 

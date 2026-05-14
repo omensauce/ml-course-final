@@ -10,7 +10,11 @@ Run standalone:
 """
 from __future__ import annotations
 
+import asyncio
+import csv
+import io
 import math
+import os
 import random
 import time
 from collections import deque
@@ -101,6 +105,7 @@ _scenario_activations = Counter(
     "Scenario activation counts by name",
     ["scenario"],
 )
+_minio_uploads = Counter("sensor_minio_uploads_total", "Successful MinIO CSV flushes")
 # Pre-create label combos so they appear in /metrics from startup
 for _s in SCENARIOS:
     _scenario_activations.labels(scenario=_s)
@@ -142,6 +147,47 @@ def _make_reading() -> dict:
 # Pre-populate 90 seconds of history so /sensors/history always has ≥12 entries
 for _ in range(90):
     _history.append(_make_reading())
+
+
+# ── MinIO background flush ────────────────────────────────────────────────────
+@app.on_event("startup")
+async def _start_minio_flush():
+    if os.getenv("MINIO_ENABLED", "false").lower() == "true":
+        asyncio.create_task(_minio_flush_loop())
+
+
+async def _minio_flush_loop():
+    import boto3  # deferred — not installed in compose.frontend.yml
+
+    interval = int(os.getenv("MINIO_FLUSH_INTERVAL", "60"))
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=os.getenv("MINIO_ENDPOINT", "http://minio:9000"),
+        aws_access_key_id=os.getenv("MINIO_ACCESS_KEY", "minio"),
+        aws_secret_access_key=os.getenv("MINIO_SECRET_KEY", "minio123"),
+    )
+    bucket = os.getenv("MINIO_BUCKET", "raw")
+    cols = ["timestamp"] + list(SENSORS.keys()) + ["scenario"]
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            snapshot = list(_history)
+            if not snapshot:
+                continue
+            active = _state["scenario"]
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=cols)
+            writer.writeheader()
+            for row in snapshot:
+                writer.writerow({**row, "scenario": active})
+            data = buf.getvalue().encode()
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            s3.put_object(Bucket=bucket, Key=f"live/sensor_{ts}.csv", Body=data)
+            s3.put_object(Bucket=bucket, Key="live/latest.csv", Body=data)
+            _minio_uploads.inc()
+        except Exception:
+            pass  # best-effort; don't crash the sensor API on MinIO hiccup
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
